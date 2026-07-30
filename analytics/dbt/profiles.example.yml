@@ -1,0 +1,13 @@
+volteras_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_POSTGRES_HOST', 'localhost') }}"
+      port: "{{ env_var('DBT_POSTGRES_PORT', '5432') | int }}"
+      user: "{{ env_var('DBT_POSTGRES_USER', 'volteras') }}"
+      password: "{{ env_var('DBT_POSTGRES_PASSWORD', 'volteras') }}"
+      dbname: "{{ env_var('DBT_POSTGRES_DB', 'volteras') }}"
+      schema: "{{ env_var('DBT_SCHEMA', 'analytics') }}"
+      threads: 4
+

@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint import-data
+.PHONY: up down logs test coverage lint import-data dbt-deps dbt-build
 
 up:
 	docker compose up --build
@@ -12,7 +12,7 @@ logs:
 test:
 	docker compose run --rm backend pytest -q
 
-test-coverage:
+coverage:
 	docker compose run --rm backend \
   	pytest tests \
  	 --cov=app \
@@ -25,3 +25,8 @@ lint:
 import-data:
 	docker compose run --rm -e PYTHONPATH=/app  backend python scripts/load_csv.py /data
 
+dbt-deps:
+	cd analytics/dbt && dbt deps --profiles-dir .
+
+dbt-build:
+	cd analytics/dbt && dbt build --profiles-dir .
