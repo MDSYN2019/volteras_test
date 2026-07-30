@@ -13,18 +13,24 @@ The application includes:
 * Vehicle telemetry charts
 * Automated backend tests with pytest
 * Docker Compose for local development
+* A dbt analytics project with staging and hourly fact models
+* An idempotent Spark Structured Streaming ingestion example
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     CSV[Vehicle CSV files] --> Loader[Python CSV import service]
+    CSV --> Spark[Spark Structured Streaming]
     Loader --> DB[(PostgreSQL)]
+    Spark -->|ON CONFLICT: skip| DB
 
     UI[React + TypeScript frontend] --> API[FastAPI REST API]
     API --> DB
 
     API --> Export[JSON / CSV / Excel exports]
+    DB --> dbt[dbt staging models]
+    dbt --> Mart[(Hourly telemetry mart)]
 ```
 
 ## Technology stack
@@ -54,6 +60,8 @@ flowchart LR
 * Docker
 * Docker Compose
 * Make
+* dbt Core with the PostgreSQL adapter
+* PySpark Structured Streaming
 
 ## Features
 
@@ -146,6 +154,13 @@ The chart currently displays the records returned for the active table page.
 .
 ├── ai_usage
 │   └── prompts.md
+├── analytics
+│   └── dbt
+│       ├── models
+│       │   ├── marts
+│       │   └── staging
+│       ├── tests
+│       └── profiles.example.yml
 ├── backend
 │   ├── app
 │   │   ├── api
@@ -162,6 +177,9 @@ The chart currently displays the records returned for the active table page.
 │   │   ├── components
 │   │   └── types
 ├── sample_data
+├── streaming
+│   ├── requirements.txt
+│   └── vehicle_stream.py
 ├── docker-compose.yml
 ├── Makefile
 └── README.md
@@ -203,6 +221,17 @@ Then open:
 
 The backend creates the required database tables when the application starts.
 
+### Service dependencies and startup order
+
+PostgreSQL must be healthy before the API starts. The API creates `public.vehicle_data`, so start
+the application at least once before running Spark or dbt. Spark writes into that source table;
+dbt reads it and creates analytics relations in the `analytics` schema. Neither analytics tool is
+required to use the API or frontend.
+
+The default credentials in this repository are development-only. For a shared or production
+environment, replace every default, keep secrets outside version control, disable the Vite dev
+server, and run database migrations rather than relying on application startup table creation.
+
 ## Load the supplied CSV data
 
 Place the CSV files in:
@@ -237,6 +266,112 @@ The loader is idempotent for rows sharing the same:
 ```
 
 Re-running the import will skip records already stored in the database.
+
+## Analytics with dbt
+
+The project in `analytics/dbt` is a runnable dbt template against the same PostgreSQL instance.
+It intentionally does not own the application table. Instead, it declares `public.vehicle_data`
+as a source, builds a lightweight staging view, and builds an hourly fact table.
+
+### Models
+
+| Relation | Materialization | Purpose |
+| --- | --- | --- |
+| `application.vehicle_data` | dbt source | Contract for the application-owned raw table |
+| `stg_vehicle_data` | view | Renames analytics fields and normalizes shift state |
+| `fct_vehicle_hourly` | table | Hourly counts, speed, charge, odometer-distance metrics |
+
+The model tests cover source keys, required fields, state-of-charge bounds, and the grain of one
+row per vehicle per hour. The template is deliberately small: add new marts under `models/marts`
+and consume only `ref('stg_vehicle_data')` rather than coupling downstream SQL to the source.
+
+### Run dbt
+
+Start PostgreSQL and the backend, then create an isolated Python environment:
+
+```bash
+docker compose up -d db backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r analytics/dbt/requirements.txt
+cp analytics/dbt/profiles.example.yml analytics/dbt/profiles.yml
+cd analytics/dbt
+dbt debug --profiles-dir .
+dbt build --profiles-dir .
+```
+
+The profile uses `localhost:5432`, the Compose development credentials, and the `analytics`
+schema by default. Override any value without editing the profile:
+
+```bash
+export DBT_POSTGRES_HOST=localhost
+export DBT_POSTGRES_PORT=5432
+export DBT_POSTGRES_USER=volteras
+export DBT_POSTGRES_PASSWORD=volteras
+export DBT_POSTGRES_DB=volteras
+export DBT_SCHEMA=analytics
+```
+
+To inspect the result:
+
+```bash
+docker compose exec db psql -U volteras -d volteras -c \
+  'select * from analytics.fct_vehicle_hourly order by observed_hour limit 10;'
+```
+
+`dbt build` is preferable to `dbt run` here because it creates models and executes their data
+tests in dependency order. For production, use a separately privileged dbt role, pin deployment
+artifacts, and schedule `dbt build` after ingestion has completed its expected freshness window.
+
+## Spark Structured Streaming ingestion
+
+`streaming/vehicle_stream.py` watches a directory for CSV files, derives `vehicle_id` from each
+filename, parses telemetry with an explicit schema, validates required values, and writes each
+micro-batch to `public.vehicle_data`. PostgreSQL's `(vehicle_id, timestamp)` unique constraint and
+`ON CONFLICT DO NOTHING` make replay safe. Spark checkpoints track files already processed.
+
+### Input contract
+
+Files must be named `<vehicle_id>.csv` and contain this header:
+
+```csv
+timestamp,speed,odometer,soc,elevation,shift_state
+```
+
+`speed` and `shift_state` accept blank, `NULL`, `NONE`, or `N/A`. Timestamp, odometer, state of
+charge, and elevation are required; state of charge must be between 0 and 100. Invalid rows are
+counted as rejected in the micro-batch log and are not written. For a production pipeline, route
+those records to a durable dead-letter table instead of recording only a count.
+
+### Run the stream locally
+
+Java 8, 11, or 17 and Python 3.10+ are required by this pinned PySpark example. With PostgreSQL
+and the API already started:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r streaming/requirements.txt
+export STREAM_DATABASE_URL='postgresql://volteras:volteras@localhost:5432/volteras'
+mkdir -p incoming
+python streaming/vehicle_stream.py --input incoming --checkpoint .checkpoints/vehicle-stream
+```
+
+In another terminal, copy (do not move) a sample into the watched directory:
+
+```bash
+cp sample_data/1bbdf62b-4e52-48c4-8703-5a844d1da912.csv incoming/
+```
+
+The stream checks for new files every ten seconds. Stop it with `Ctrl+C`. Keep the checkpoint on
+durable storage and reuse it after restart. To intentionally replay all input, stop the stream,
+remove its checkpoint, and restart; database conflicts will still prevent duplicate observations.
+
+For a cluster deployment, install `psycopg` on every executor, distribute this script with
+`spark-submit`, set `STREAM_DATABASE_URL` in executor environments, and use a secrets manager.
+The example opens one PostgreSQL transaction per non-empty Spark partition; tune the number of
+partitions to protect the database connection limit. Kafka, object-storage event streams, a dead
+letter sink, metrics, and backpressure limits are natural next steps for higher-volume workloads.
 
 ## API endpoints
 

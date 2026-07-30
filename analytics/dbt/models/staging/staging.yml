@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: stg_vehicle_data
+    description: Analytics-ready names and normalized shift state for vehicle telemetry.
+    columns:
+      - name: vehicle_data_id
+        tests: [not_null, unique]
+      - name: vehicle_id
+        tests: [not_null]
+      - name: observed_at
+        tests: [not_null]
+      - name: state_of_charge_pct
+        tests:
+          - not_null
+          - accepted_range:
+              min_value: 0
+              max_value: 100
+

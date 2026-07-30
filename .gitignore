@@ -1,0 +1,9 @@
+.checkpoints/
+.venv/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+analytics/dbt/dbt_packages/
+analytics/dbt/logs/
+analytics/dbt/profiles.yml
+analytics/dbt/target/

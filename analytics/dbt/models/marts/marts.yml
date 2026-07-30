@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: fct_vehicle_hourly
+    description: One row per vehicle and UTC hour with operational telemetry metrics.
+    columns:
+      - name: vehicle_id
+        tests: [not_null]
+      - name: observed_hour
+        tests: [not_null]
+      - name: observation_count
+        tests: [not_null]
+    tests:
+      - unique:
+          column_name: "vehicle_id || '-' || observed_hour::text"
+

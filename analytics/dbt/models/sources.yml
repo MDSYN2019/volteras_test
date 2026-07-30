@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: application
+    description: Tables owned by the Volteras FastAPI application.
+    database: "{{ env_var('DBT_POSTGRES_DB', 'volteras') }}"
+    schema: public
+    tables:
+      - name: vehicle_data
+        description: Raw, deduplicated vehicle observations loaded by the API or Spark stream.
+        columns:
+          - name: id
+            tests: [not_null, unique]
+          - name: vehicle_id
+            tests: [not_null]
+          - name: timestamp
+            tests: [not_null]
+
