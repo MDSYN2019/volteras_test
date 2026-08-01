@@ -347,6 +347,8 @@ Re-running the import will skip records already stored in the database.
 ## Analytics with dbt
 
 The project in `analytics/dbt` is a runnable dbt template against the same PostgreSQL instance.
+The dbt Make targets create the ignored local `profiles.yml` from `profiles.example.yml` when it is
+missing, so they work without a separate profile-copy step. An existing local profile is preserved.
 It intentionally does not own the application table. Instead, it declares `public.vehicle_data`
 as a source, builds a lightweight staging view, and builds an hourly fact table.
 
