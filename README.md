@@ -226,6 +226,78 @@ Then open:
 
 The backend creates the required database tables when the application starts.
 
+## Local virtual-environment setup
+
+Docker Compose remains the quickest way to run the complete stack, but all Python components—the
+API, CSV loader, tests, dbt, and Spark stream—can share one virtual environment. The frontend still
+uses Node.js, and the commands below use Compose only for PostgreSQL. Install Python 3.10–3.12,
+Node.js/npm, and Java 8, 11, or 17 (Java is required only for Spark), then run:
+
+```bash
+cp .env.example .env
+make venv
+cp analytics/dbt/profiles.example.yml analytics/dbt/profiles.yml
+npm --prefix frontend install
+docker compose up -d db
+```
+
+Activate the environment in each terminal that runs a Python command:
+
+```bash
+source .venv/bin/activate
+```
+
+The root `requirements-venv.txt` installs the backend, development, dbt PostgreSQL adapter, and
+PySpark dependencies together. `make venv` can be run again after any requirements file changes.
+
+### Run the application locally
+
+Start the API (its local database URL uses `localhost`, rather than Compose's `db` hostname):
+
+```bash
+DATABASE_URL='postgresql+psycopg://volteras:volteras@localhost:5432/volteras' \
+  uvicorn app.main:app --app-dir backend --reload --port 8000
+```
+
+In a second terminal, start the frontend:
+
+```bash
+npm --prefix frontend run dev -- --host 0.0.0.0
+```
+
+The API startup creates `public.vehicle_data`. You can then import the sample data and run the
+backend checks using the same environment:
+
+```bash
+make venv-import-data
+make venv-test
+make venv-lint
+```
+
+To run dbt from that environment, keep PostgreSQL and the API running, then execute:
+
+```bash
+make venv-dbt-debug
+make venv-dbt-build
+```
+
+The checked-in example profile defaults to PostgreSQL on `localhost:5432`. The `DBT_POSTGRES_*`
+and `DBT_SCHEMA` variables documented in [Analytics with dbt](#analytics-with-dbt) can override
+those settings. To run the streaming example from the same environment:
+
+```bash
+export STREAM_DATABASE_URL='postgresql://volteras:volteras@localhost:5432/volteras'
+mkdir -p incoming
+python streaming/vehicle_stream.py --input incoming --checkpoint .checkpoints/vehicle-stream
+```
+
+When finished, stop PostgreSQL and deactivate the environment:
+
+```bash
+docker compose down
+deactivate
+```
+
 ### Service dependencies and startup order
 
 PostgreSQL must be healthy before the API starts. The API creates `public.vehicle_data`, so start
@@ -292,7 +364,9 @@ and consume only `ref('stg_vehicle_data')` rather than coupling downstream SQL t
 
 ### Run dbt
 
-Start PostgreSQL and the backend, then create an isolated Python environment:
+Start PostgreSQL and the backend. If you used the shared environment setup above, dbt is already
+installed and you can use `make venv-dbt-debug` and `make venv-dbt-build`. To install only dbt in a
+separate environment instead:
 
 ```bash
 docker compose up -d db backend
@@ -350,8 +424,10 @@ those records to a durable dead-letter table instead of recording only a count.
 
 ### Run the stream locally
 
-Java 8, 11, or 17 and Python 3.10+ are required by this pinned PySpark example. With PostgreSQL
-and the API already started:
+Java 8, 11, or 17 and Python 3.10+ are required by this pinned PySpark example. The shared
+environment from [Local virtual-environment setup](#local-virtual-environment-setup) already
+includes PySpark. To install only the streaming dependencies in a separate environment instead,
+with PostgreSQL and the API already started:
 
 ```bash
 python -m venv .venv
@@ -620,6 +696,18 @@ make lint
 ```
 
 Run backend linting.
+
+```bash
+make venv
+make venv-test
+make venv-lint
+make venv-import-data
+make venv-dbt-debug
+make venv-dbt-build
+```
+
+Create the shared local Python environment, run backend checks/imports, and validate or build the
+dbt project without running those components in containers.
 
 ## Data model
 
