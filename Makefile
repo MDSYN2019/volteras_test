@@ -1,4 +1,9 @@
-.PHONY: up down logs test coverage lint import-data dbt-deps dbt-build
+.PHONY: up down logs test coverage lint import-data dbt-deps dbt-build \
+	venv venv-test venv-lint venv-import-data venv-dbt-debug venv-dbt-build
+
+VENV ?= .venv
+VENV_BIN := $(VENV)/bin
+LOCAL_DATABASE_URL ?= postgresql+psycopg://volteras:volteras@localhost:5432/volteras
 
 up:
 	docker compose up --build
@@ -30,3 +35,22 @@ dbt-deps:
 
 dbt-build:
 	cd analytics/dbt && dbt build --profiles-dir .
+
+venv:
+	python3 -m venv $(VENV)
+	$(VENV_BIN)/python -m pip install -r requirements-venv.txt
+
+venv-test:
+	cd backend && ../$(VENV_BIN)/python -m pytest -q
+
+venv-lint:
+	cd backend && ../$(VENV_BIN)/ruff check app tests
+
+venv-import-data:
+	cd backend && DATABASE_URL=$(LOCAL_DATABASE_URL) ../$(VENV_BIN)/python scripts/load_csv.py ../sample_data
+
+venv-dbt-debug:
+	cd analytics/dbt && ../../$(VENV_BIN)/dbt debug --profiles-dir .
+
+venv-dbt-build:
+	cd analytics/dbt && ../../$(VENV_BIN)/dbt build --profiles-dir .
