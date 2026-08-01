@@ -1,4 +1,4 @@
-.PHONY: up down logs test coverage lint import-data dbt-deps dbt-build \
+.PHONY: up down logs test coverage lint import-data dbt-profile dbt-deps dbt-build \
 	venv venv-test venv-lint venv-import-data venv-dbt-debug venv-dbt-build
 
 VENV ?= .venv
@@ -30,10 +30,14 @@ lint:
 import-data:
 	docker compose run --rm -e PYTHONPATH=/app  backend python scripts/load_csv.py /data
 
-dbt-deps:
+dbt-profile:
+	@test -f analytics/dbt/profiles.yml || \
+		cp analytics/dbt/profiles.example.yml analytics/dbt/profiles.yml
+
+dbt-deps: dbt-profile
 	cd analytics/dbt && dbt deps --profiles-dir .
 
-dbt-build:
+dbt-build: dbt-profile
 	cd analytics/dbt && dbt build --profiles-dir .
 
 venv:
@@ -49,8 +53,8 @@ venv-lint:
 venv-import-data:
 	cd backend && DATABASE_URL=$(LOCAL_DATABASE_URL) ../$(VENV_BIN)/python scripts/load_csv.py ../sample_data
 
-venv-dbt-debug:
+venv-dbt-debug: dbt-profile
 	cd analytics/dbt && ../../$(VENV_BIN)/dbt debug --profiles-dir .
 
-venv-dbt-build:
+venv-dbt-build: dbt-profile
 	cd analytics/dbt && ../../$(VENV_BIN)/dbt build --profiles-dir .
