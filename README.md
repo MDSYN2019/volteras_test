@@ -18,6 +18,11 @@ The application includes:
 
 ## Architecture
 
+The following view summarizes the main data and request paths. See the
+[systems engineering architecture reference](docs/system-architecture.md) for
+the full component diagram, failure boundaries, operational considerations,
+and production evolution priorities.
+
 ```mermaid
 flowchart LR
     CSV[Vehicle CSV files] --> Loader[Python CSV import service]
