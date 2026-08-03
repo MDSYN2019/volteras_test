@@ -13,6 +13,7 @@ The application includes:
 * Vehicle telemetry charts
 * Automated backend tests with pytest
 * Docker Compose for local development
+* A provisioned Grafana telemetry dashboard
 * A dbt analytics project with staging and hourly fact models
 * An idempotent Spark Structured Streaming ingestion example
 
@@ -31,6 +32,7 @@ flowchart LR
     Spark -->|ON CONFLICT: skip| DB
 
     UI[React + TypeScript frontend] --> API[FastAPI REST API]
+    Grafana[Grafana telemetry dashboard] --> DB
     API --> DB
 
     API --> Export[JSON / CSV / Excel exports]
@@ -56,6 +58,7 @@ flowchart LR
 * Vite
 * TanStack React Query
 * Recharts
+* Grafana
 
 ### Testing and local development
 
@@ -181,6 +184,10 @@ The chart currently displays the records returned for the active table page.
 │   │   ├── api
 │   │   ├── components
 │   │   └── types
+├── monitoring
+│   └── grafana
+│       ├── dashboards
+│       └── provisioning
 ├── sample_data
 ├── streaming
 │   ├── requirements.txt
@@ -208,6 +215,9 @@ POSTGRES_PASSWORD=<database_password>
 DATABASE_URL=postgresql+psycopg://<database_user>:<database_password>@db:5432/<database_name>
 
 VITE_API_BASE_URL=http://localhost:8000
+
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=<development_admin_password>
 ```
 
 where VITE_API_BASE_URL tells the React frontend where the FastAPI backend is running.
@@ -223,8 +233,26 @@ Then open:
 
 * Frontend: `http://localhost:5173`
 * API documentation: `http://localhost:8000/docs`
+* Grafana: `http://localhost:3000`
 
 The backend creates the required database tables when the application starts.
+
+### Grafana dashboard
+
+Grafana starts with the Compose stack at `http://localhost:3000`. Sign in with the
+`GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` values from `.env`, then open
+**Dashboards → Volteras → Vehicle Telemetry**. The PostgreSQL data source and dashboard are
+provisioned automatically; no setup in the Grafana UI is required.
+
+The dashboard reads `public.vehicle_data` through Grafana's server-side PostgreSQL data source and
+provides a vehicle selector, observation count, average state of charge, average speed, and a
+speed/state-of-charge time series. The global Grafana time picker filters every panel. Dashboard
+files are read-only and source-controlled under `monitoring/grafana/`; make persistent dashboard
+changes there rather than editing the provisioned dashboard in the UI.
+
+The default login and database credentials are intended only for local development. Override them
+in `.env` and use a least-privilege, read-only PostgreSQL user before deploying Grafana in a shared
+environment.
 
 ## Local virtual-environment setup
 
