@@ -1,0 +1,59 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "postgres", "uid": "volteras-postgres"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"editorMode": "code", "format": "table", "rawQuery": true, "rawSql": "SELECT count(*) AS value FROM public.vehicle_data WHERE vehicle_id IN (${vehicle:sqlstring}) AND $__timeFilter(timestamp)", "refId": "A"}],
+      "title": "Observations in range",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "volteras-postgres"},
+      "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"editorMode": "code", "format": "table", "rawQuery": true, "rawSql": "SELECT avg(soc) AS value FROM public.vehicle_data WHERE vehicle_id IN (${vehicle:sqlstring}) AND $__timeFilter(timestamp)", "refId": "A"}],
+      "title": "Average state of charge",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "volteras-postgres"},
+      "fieldConfig": {"defaults": {"unit": "velocitykmh"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"editorMode": "code", "format": "table", "rawQuery": true, "rawSql": "SELECT avg(speed) AS value FROM public.vehicle_data WHERE vehicle_id IN (${vehicle:sqlstring}) AND $__timeFilter(timestamp)", "refId": "A"}],
+      "title": "Average speed",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "volteras-postgres"},
+      "fieldConfig": {"defaults": {}, "overrides": [{"matcher": {"id": "byName", "options": "speed"}, "properties": [{"id": "unit", "value": "velocitykmh"}]}, {"matcher": {"id": "byName", "options": "soc"}, "properties": [{"id": "unit", "value": "percent"}, {"id": "custom.axisPlacement", "value": "right"}]}]},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 4},
+      "id": 4,
+      "options": {"legend": {"calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "targets": [{"editorMode": "code", "format": "time_series", "rawQuery": true, "rawSql": "SELECT timestamp AS time, speed, soc FROM public.vehicle_data WHERE vehicle_id IN (${vehicle:sqlstring}) AND $__timeFilter(timestamp) ORDER BY timestamp", "refId": "A"}],
+      "title": "Speed and state of charge",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["volteras", "vehicle-telemetry"],
+  "templating": {"list": [{"current": {}, "datasource": {"type": "postgres", "uid": "volteras-postgres"}, "definition": "SELECT DISTINCT vehicle_id FROM public.vehicle_data ORDER BY vehicle_id", "includeAll": false, "label": "Vehicle", "name": "vehicle", "options": [], "query": "SELECT DISTINCT vehicle_id FROM public.vehicle_data ORDER BY vehicle_id", "refresh": 1, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"}]},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Vehicle Telemetry",
+  "uid": "volteras-vehicle-telemetry",
+  "version": 1
+}

@@ -18,10 +18,12 @@ flowchart TB
         frontend["React + TypeScript UI<br/>Vite :5173<br/>filter · sort · chart · export"]
         api["FastAPI service<br/>Uvicorn :8000<br/>validation · pagination · export"]
         postgres[("PostgreSQL 16<br/>public.vehicle_data<br/>unique: vehicle_id + timestamp")]
+        grafana["Grafana :3000<br/>provisioned telemetry dashboard"]
 
         frontend -->|"HTTP/JSON<br/>/api/v1/vehicle_data"| api
         api -->|"SQLAlchemy sessions<br/>read / insert"| postgres
         api -->|"JSON / CSV / XLSX<br/>download"| frontend
+        grafana -->|"server-side read queries"| postgres
     end
 
     subgraph ingestion["Telemetry ingestion paths"]
@@ -40,6 +42,7 @@ flowchart TB
     end
 
     user -->|"opens UI"| frontend
+    operator -->|"views telemetry dashboard"| grafana
     operator -->|"places / uploads files"| csv
     csv --> cli
     csv --> upload
@@ -53,7 +56,7 @@ flowchart TB
     classDef primary fill:#dbeafe,stroke:#2563eb,color:#172554;
     classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d;
     classDef optional fill:#fef3c7,stroke:#d97706,color:#78350f;
-    class frontend,api primary;
+    class frontend,api,grafana primary;
     class postgres,csv,mart store;
     class cli,upload,spark,source,staging optional;
 ```
@@ -112,7 +115,7 @@ flowchart TB
 | Analytics ownership | dbt reads the application table and writes the `analytics` schema | Run dbt with a separate least-privilege role and schedule it after the ingestion freshness window. |
 | Availability | One instance of each Compose service and one PostgreSQL volume | This is a local-development topology, without high availability, automated backups, or disaster recovery. |
 | Security | Local CORS origin and development credentials | Production needs managed secrets, TLS, authentication/authorization, restricted origins, and non-development servers. |
-| Observability | Application/stream console logs and API docs | Add structured logs, metrics, traces, ingestion freshness, rejection rates, and database saturation alerts. |
+| Observability | Provisioned Grafana telemetry dashboard plus application/stream console logs and API docs | Grafana currently visualizes business telemetry directly from PostgreSQL; add application metrics, traces, ingestion freshness, rejection rates, and saturation alerts. |
 | Schema lifecycle | SQLAlchemy `create_all` at API startup | Replace startup DDL with versioned migrations before multiple environments or rolling deployments. |
 | Scaling constraint | Spark opens one transaction/connection per non-empty partition | Bound partitions and API pool sizes against PostgreSQL connection and write capacity. |
 
