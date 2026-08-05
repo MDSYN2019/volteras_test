@@ -9,65 +9,75 @@ dependencies are clear.
 
 ```mermaid
 flowchart TB
-    operator["Operator / data engineer"]
-    user["Application user<br/>Web browser"]
-    csv[("Vehicle telemetry CSV<br/>&lt;vehicle_id&gt;.csv")]
+    classDef client fill:#eef2ff,stroke:#4f46e5,color:#1e1b4b;
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#172554;
+    classDef cache fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d;
+    classDef optional fill:#fef3c7,stroke:#d97706,color:#78350f;
+    classDef ops fill:#f3e8ff,stroke:#9333ea,color:#581c87;
 
-    subgraph runtime["Docker Compose application runtime"]
+    operator[Operator / data engineer]:::ops
+    user[Application user<br/>web browser]:::client
+    csv[(Vehicle telemetry CSV<br/>&lt;vehicle_id&gt;.csv)]:::store
+
+    subgraph runtime[Docker Compose application runtime]
         direction LR
-        frontend["React + TypeScript UI<br/>Vite :5173<br/>filter · sort · chart · export"]
-        api["FastAPI service<br/>Uvicorn :8000<br/>validation · pagination · export"]
-        postgres[("PostgreSQL 16<br/>public.vehicle_data<br/>unique: vehicle_id + timestamp")]
-        grafana["Grafana :3000<br/>provisioned telemetry dashboard"]
+        frontend[React + TypeScript UI<br/>Vite :5173<br/>filter · sort · chart · export]:::app
+        lb[Nginx load balancer<br/>:8000 ingress<br/>least connections]:::client
+        api[FastAPI service<br/>Uvicorn :8000<br/>validation · pagination · export]:::app
+        cache[(In-process TTL read cache<br/>paginated reads · row lookups)]:::cache
+        postgres[(PostgreSQL 16<br/>public.vehicle_data<br/>unique: vehicle_id + timestamp)]:::store
+        grafana[Grafana :3000<br/>provisioned telemetry dashboard]:::ops
 
-        frontend -->|"HTTP/JSON<br/>/api/v1/vehicle_data"| api
-        api -->|"SQLAlchemy sessions<br/>read / insert"| postgres
-        api -->|"JSON / CSV / XLSX<br/>download"| frontend
-        grafana -->|"server-side read queries"| postgres
+        frontend -->|HTTP/JSON<br/>/api/v1/vehicle_data| lb
+        lb -->|proxy /api/* and /health| api
+        api -->|lookup / populate| cache
+        api -->|SQLAlchemy sessions<br/>read / insert| postgres
+        api -->|JSON / CSV / XLSX<br/>download| frontend
+        grafana -->|server-side read queries| postgres
     end
 
-    subgraph ingestion["Telemetry ingestion paths"]
+    subgraph ingestion[Telemetry ingestion paths]
         direction LR
-        cli["Python CSV loader<br/>manual batch import"]
-        upload["FastAPI upload endpoint<br/>multipart CSV"]
-        spark["Spark Structured Streaming<br/>10 s micro-batches<br/>checkpointed file discovery"]
+        cli[Python CSV loader<br/>manual batch import]:::optional
+        upload[FastAPI upload endpoint<br/>multipart CSV]:::app
+        spark[Spark Structured Streaming<br/>10 s micro-batches<br/>checkpointed file discovery]:::optional
+        dummy[Dummy data writer<br/>optional Compose profile<br/>synthetic telemetry]:::optional
     end
 
-    subgraph analytics["Optional analytics plane"]
+    subgraph analytics[Optional analytics plane]
         direction LR
-        source["dbt source<br/>application.vehicle_data"]
-        staging["stg_vehicle_data<br/>view · renamed / normalized"]
-        mart[("fct_vehicle_hourly<br/>table · per vehicle/hour")]
+        source[dbt source<br/>application.vehicle_data]:::optional
+        staging[stg_vehicle_data<br/>view · renamed / normalized]:::optional
+        mart[(fct_vehicle_hourly<br/>table · per vehicle/hour)]:::store
         source --> staging --> mart
     end
 
-    user -->|"opens UI"| frontend
-    operator -->|"views telemetry dashboard"| grafana
-    operator -->|"places / uploads files"| csv
+    user -->|opens UI| frontend
+    operator -->|views telemetry dashboard| grafana
+    operator -->|places / uploads files| csv
     csv --> cli
     csv --> upload
     csv --> spark
-    cli -->|"validated insert<br/>duplicates skipped"| postgres
-    upload -->|"parse and validate"| api
-    spark -->|"partition transactions<br/>ON CONFLICT DO NOTHING"| postgres
-    postgres -.->|"dbt build reads"| source
-    operator -->|"runs dbt build"| source
-
-    classDef primary fill:#dbeafe,stroke:#2563eb,color:#172554;
-    classDef store fill:#dcfce7,stroke:#16a34a,color:#14532d;
-    classDef optional fill:#fef3c7,stroke:#d97706,color:#78350f;
-    class frontend,api,grafana primary;
-    class postgres,csv,mart store;
-    class cli,upload,spark,source,staging optional;
+    cli -->|validated insert<br/>duplicates skipped| postgres
+    upload -->|parse and validate| api
+    spark -->|partition transactions<br/>ON CONFLICT DO NOTHING| postgres
+    dummy -->|periodic inserts| postgres
+    postgres -.->|dbt build reads| source
+    operator -->|runs dbt build| source
 ```
+
 
 ### Diagram legend
 
+- **Indigo** components are users, browsers, or ingress points.
 - **Blue** components serve the interactive application path.
+- **Yellow** marks the short-lived in-process read cache.
 - **Green** components are persisted data or data products.
+- **Purple** components are operator-facing tools.
 - **Amber** components are invoked ingestion or analytics workloads rather
   than required always-on services.
-- Solid arrows are request or write flows. The dotted arrow is the analytical
+- Solid arrows are request, cache, or write flows. The dotted arrow is the analytical
   read dependency.
 
 ## Primary data flows
@@ -76,8 +86,9 @@ flowchart TB
 
 1. The browser requests a vehicle and optional time range, page, and sort
    settings from the FastAPI API.
-2. FastAPI validates the query and uses an SQLAlchemy session to count and
-   retrieve the requested page from PostgreSQL.
+2. FastAPI validates the query, checks the short-lived read cache for common
+   paginated or row lookups, and uses an SQLAlchemy session on a cache miss to
+   count and retrieve the requested page from PostgreSQL.
 3. The UI renders the returned page as both a table and a telemetry chart.
 4. An export request reads all rows for one vehicle, orders them by timestamp,
    and returns a generated JSON, CSV, or Excel download.
@@ -89,6 +100,8 @@ flowchart TB
 2. The Python importer validates the header and each typed telemetry field.
 3. Rows are inserted into `public.vehicle_data`; records already present at
    the `(vehicle_id, timestamp)` grain are skipped.
+4. Successful API imports clear the in-process API cache so imported records are
+   visible immediately to subsequent API reads.
 
 ### Streaming and analytics
 
@@ -106,14 +119,14 @@ flowchart TB
 | --- | --- | --- |
 | System of record | PostgreSQL `public.vehicle_data` | API, loader, Spark, and dbt share one data contract; schema changes must be coordinated. |
 | Record identity | Unique `(vehicle_id, timestamp)` | Batch retries and stream replays are idempotent, but two readings for the same vehicle and instant cannot coexist. |
-| Startup order | Healthy PostgreSQL → FastAPI → frontend | FastAPI currently creates the table at startup; Spark and dbt must wait until it exists. |
-| Application boundary | Browser calls FastAPI over HTTP; only FastAPI accesses application data | Keep database credentials out of the browser and preserve the API as the validation boundary. |
-| Query behavior | Filtering, sorting, counting, and pagination run in PostgreSQL | The composite vehicle/timestamp index supports the primary access pattern; the chart contains only the active page. |
+| Startup order | Healthy PostgreSQL → FastAPI → load balancer → frontend | FastAPI currently creates the table at startup; Spark and dbt must wait until it exists. |
+| Application boundary | Browser calls Nginx, which proxies FastAPI over HTTP; only FastAPI accesses application data | Keep database credentials out of the browser and preserve the API as the validation boundary. |
+| Query behavior | Filtering, sorting, counting, and pagination run in PostgreSQL on cache misses | The composite vehicle/timestamp index supports the primary access pattern; the chart contains only the active page. The in-process cache is a local optimization, not a cross-replica consistency layer. |
 | Validation | Pydantic/Python validates batch and API imports; Spark has a parallel validation implementation | Contract changes must be made in both ingestion paths to avoid inconsistent acceptance rules. |
 | Stream delivery | Checkpointed file discovery plus conflict-safe database inserts | Delivery is effectively at-least-once with idempotent persistence, not exactly-once end to end. |
 | Bad stream records | Invalid rows are counted in logs and discarded | A production design should use a durable dead-letter store with reason, source file, and batch metadata. |
 | Analytics ownership | dbt reads the application table and writes the `analytics` schema | Run dbt with a separate least-privilege role and schedule it after the ingestion freshness window. |
-| Availability | One instance of each Compose service and one PostgreSQL volume | This is a local-development topology, without high availability, automated backups, or disaster recovery. |
+| Availability | Nginx fronts the API service, with one PostgreSQL volume | This is still a local-development topology, without high availability, automated backups, or disaster recovery. Scale API replicas only with database connection budgets and cache staleness in mind. |
 | Security | Local CORS origin and development credentials | Production needs managed secrets, TLS, authentication/authorization, restricted origins, and non-development servers. |
 | Observability | Provisioned Grafana telemetry dashboard plus application/stream console logs and API docs | Grafana currently visualizes business telemetry directly from PostgreSQL; add application metrics, traces, ingestion freshness, rejection rates, and saturation alerts. |
 | Schema lifecycle | SQLAlchemy `create_all` at API startup | Replace startup DDL with versioned migrations before multiple environments or rolling deployments. |

@@ -14,6 +14,9 @@ The application includes:
 * Automated backend tests with pytest
 * Docker Compose for local development
 * A provisioned Grafana telemetry dashboard
+* An Nginx load balancer in front of the backend API
+* An optional dummy telemetry writer for live local data
+* Short-lived API response caching for common reads
 * A dbt analytics project with staging and hourly fact models
 * An idempotent Spark Structured Streaming ingestion example
 
@@ -25,20 +28,59 @@ the full component diagram, failure boundaries, operational considerations,
 and production evolution priorities.
 
 ```mermaid
-flowchart LR
-    CSV[Vehicle CSV files] --> Loader[Python CSV import service]
-    CSV --> Spark[Spark Structured Streaming]
-    Loader --> DB[(PostgreSQL)]
-    Spark -->|ON CONFLICT: skip| DB
+flowchart TB
+    classDef edge fill:#eef2ff,stroke:#4f46e5,color:#1e1b4b;
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#172554;
+    classDef cache fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    classDef data fill:#dcfce7,stroke:#16a34a,color:#14532d;
+    classDef ops fill:#f3e8ff,stroke:#9333ea,color:#581c87;
 
-    UI[React + TypeScript frontend] --> API[FastAPI REST API]
-    Grafana[Grafana telemetry dashboard] --> DB
-    API --> DB
+    User[Application user<br/>web browser]:::edge
+    Operator[Operator / data engineer]:::ops
+    CSV[(Vehicle CSV files<br/>&lt;vehicle_id&gt;.csv)]:::data
 
-    API --> Export[JSON / CSV / Excel exports]
-    DB --> dbt[dbt staging models]
-    dbt --> Mart[(Hourly telemetry mart)]
+    subgraph Runtime[Local Docker Compose runtime]
+        direction LR
+        UI[React + TypeScript UI<br/>tables · charts · exports]:::app
+        LB[Nginx load balancer<br/>localhost:8000]:::edge
+        API[FastAPI API<br/>validation · pagination · export]:::app
+        Cache[(TTL read cache<br/>common GET responses)]:::cache
+        DB[(PostgreSQL<br/>vehicle telemetry)]:::data
+        Grafana[Grafana dashboard<br/>localhost:3000]:::ops
+    end
+
+    subgraph Ingestion[Ingestion options]
+        direction TB
+        Loader[Python CSV loader]:::ops
+        Upload[CSV upload endpoint]:::app
+        Spark[Spark Structured Streaming]:::ops
+        Dummy[Dummy telemetry writer<br/>optional profile]:::ops
+    end
+
+    subgraph Analytics[Analytics plane]
+        direction LR
+        dbt[dbt staging models]:::ops
+        Mart[(Hourly telemetry mart)]:::data
+    end
+
+    User -->|opens| UI
+    UI -->|HTTP JSON| LB
+    LB -->|/api/* and /health| API
+    API -->|cache lookup / fill| Cache
+    API -->|SQL reads / writes| DB
+    API -->|JSON / CSV / XLSX| UI
+    Grafana -->|server-side SQL| DB
+
+    Operator --> CSV
+    CSV --> Loader --> DB
+    CSV --> Spark -->|ON CONFLICT: skip| DB
+    CSV --> Upload --> API
+    Dummy -->|synthetic rows| DB
+
+    DB --> dbt --> Mart
+    Operator --> Grafana
 ```
+
 
 ## Technology stack
 
@@ -156,6 +198,48 @@ The chart can display:
 
 The chart currently displays the records returned for the active table page.
 
+
+## Load balancer, dummy data, caching, and Grafana login
+
+### Load-balanced API
+
+Docker Compose now exposes the API through the `load_balancer` service on
+`http://localhost:8000`. Nginx forwards `/api/*` and `/health` requests to the
+backend service, so the frontend should continue to use `VITE_API_BASE_URL=http://localhost:8000`.
+
+### Dummy database writer
+
+For local smoke testing with live-looking data, run the optional dummy writer profile:
+
+```bash
+docker compose --profile dummy-data up --build
+```
+
+The writer inserts synthetic telemetry rows into PostgreSQL every 10 seconds by
+default. Tune it with `DUMMY_WRITE_INTERVAL_SECONDS`, `DUMMY_WRITE_BATCH_SIZE`,
+and `DUMMY_VEHICLE_IDS`.
+
+### Common-read cache
+
+The backend keeps a small in-process TTL cache for common `GET` reads such as
+paginated vehicle data and single-row lookups. Set `READ_CACHE_TTL_SECONDS` to
+control the cache lifetime, or set it to `0` to disable caching. Successful CSV
+imports clear the cache so newly imported data is visible immediately.
+
+### Grafana login
+
+Open Grafana at `http://localhost:3000` after `docker compose up --build`. The
+default local credentials are:
+
+```text
+Username: admin
+Password: admin
+```
+
+If you set `GRAFANA_ADMIN_USER` or `GRAFANA_ADMIN_PASSWORD` in `.env`, use those
+values instead. Sign-up is disabled; log in with the configured admin account and
+open the provisioned vehicle telemetry dashboard.
+
 ## Repository structure
 
 ```text
@@ -218,6 +302,7 @@ VITE_API_BASE_URL=http://localhost:8000
 
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=<development_admin_password>
+READ_CACHE_TTL_SECONDS=30
 ```
 
 where VITE_API_BASE_URL tells the React frontend where the FastAPI backend is running.

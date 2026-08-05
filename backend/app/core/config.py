@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     We search the .env file and load in the the database_url from that 
     """
     database_url: str
+    read_cache_ttl_seconds: int = 30
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()
