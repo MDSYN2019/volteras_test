@@ -19,3 +19,9 @@ app.add_middleware(
 
 app.include_router(vehicle_data_router) # add the vehicle router to the main app 
 
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Return a lightweight health response for the load balancer."""
+    return {"status": "ok"}

@@ -19,8 +19,7 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://volteras:volteras@db:5432/volteras}
-    ports:
-      - "8000:8000"
+      READ_CACHE_TTL_SECONDS: ${READ_CACHE_TTL_SECONDS:-30}
     volumes:
       - ./backend:/app
       - ./sample_data:/data
@@ -28,6 +27,31 @@ services:
       db:
         condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  load_balancer:
+    image: nginx:1.27-alpine
+    ports:
+      - "8000:80"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+
+  dummy_writer:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://volteras:volteras@db:5432/volteras}
+      DUMMY_WRITE_INTERVAL_SECONDS: ${DUMMY_WRITE_INTERVAL_SECONDS:-10}
+      DUMMY_WRITE_BATCH_SIZE: ${DUMMY_WRITE_BATCH_SIZE:-5}
+      DUMMY_VEHICLE_IDS: ${DUMMY_VEHICLE_IDS:-demo-car-1,demo-car-2}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python scripts/write_dummy_data.py
+    profiles:
+      - dummy-data
 
   grafana:
     image: grafana/grafana:12.1.0
@@ -58,7 +82,7 @@ services:
       - ./frontend:/app
       - /app/node_modules
     depends_on:
-      - backend
+      - load_balancer
     command: npm run dev -- --host 0.0.0.0
 
 volumes:

@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.vehicle_data import VehicleData
 from app.schemas.vehicle_data import PaginatedVehicleData, SortField, SortOrder, VehicleDataRead
+from app.core.config import settings
 from app.services.csv_import import import_rows, parse_csv
+from app.services.read_cache import TTLCache
 
 from app.services.vehicle_export import (
     ExportFormat,
@@ -16,6 +18,8 @@ from app.services.vehicle_export import (
 )
  
 router = APIRouter(prefix="/api/v1/vehicle_data", tags=["vehicle-data"]) # router allows us to group endpoints together 
+
+read_cache = TTLCache(ttl_seconds=settings.read_cache_ttl_seconds)
 
 SORT_COLUMNS = { # map the ORM object onto the dictionary 
     "id": VehicleData.id,
@@ -60,26 +64,34 @@ def list_vehicle_data(
     # Now that we have created the filter for filtering the particular car id, we need to now find
     # the total number of rows that match this criteria 
 
-    total = db.scalar(select(func.count()).select_from(VehicleData).where(*filters)) or 0    
-    sort_column = SORT_COLUMNS[sort_by] # select the column we want to sort the filtered table by - here we are choosing the timestamp
-    ordering = desc(sort_column) if sort_order == "desc" else asc(sort_column) # default is asc  
-
-    rows = db.scalars(
-        select(VehicleData)
-        .where(*filters)
-        .order_by(ordering, VehicleData.id.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-
-    
-    return PaginatedVehicleData( # return the pydantic object which will check and structure data at runtime using Python type annotations 
-        items=[VehicleDataRead.model_validate(row) for row in rows],
-        page=page,
-        page_size=page_size,
-        total=total,
-        pages=math.ceil(total / page_size) if total else 0,
+    cache_key = (
+        "list:"
+        f"{vehicle_id}:{start_timestamp}:{end_timestamp}:"
+        f"{page}:{page_size}:{sort_by}:{sort_order}"
     )
+
+    def read_from_db() -> PaginatedVehicleData:
+        total = db.scalar(select(func.count()).select_from(VehicleData).where(*filters)) or 0
+        sort_column = SORT_COLUMNS[sort_by] # select the column we want to sort the filtered table by - here we are choosing the timestamp
+        ordering = desc(sort_column) if sort_order == "desc" else asc(sort_column) # default is asc
+
+        rows = db.scalars(
+            select(VehicleData)
+            .where(*filters)
+            .order_by(ordering, VehicleData.id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+
+        return PaginatedVehicleData( # return the pydantic object which will check and structure data at runtime using Python type annotations
+            items=[VehicleDataRead.model_validate(row) for row in rows],
+            page=page,
+            page_size=page_size,
+            total=total,
+            pages=math.ceil(total / page_size) if total else 0,
+        )
+
+    return read_cache.get_or_set(cache_key, read_from_db)
 
 
 @router.get("/{row_id}/", response_model=VehicleDataRead)
@@ -87,10 +99,13 @@ def get_vehicle_data(row_id: int, db: Session = Depends(get_db)) -> VehicleDataR
     """
     Get just the row number vehicle data 
     """
-    row = db.get(VehicleData, row_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Vehicle data row not found")
-    return VehicleDataRead.model_validate(row)
+    def read_from_db() -> VehicleDataRead:
+        row = db.get(VehicleData, row_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Vehicle data row not found")
+        return VehicleDataRead.model_validate(row)
+
+    return read_cache.get_or_set(f"row:{row_id}", read_from_db)
 
 
 @router.get(
@@ -154,6 +169,8 @@ async def import_vehicle_csv(
     try:
         rows = parse_csv(await file.read(), vehicle_id) # parse csv to pydantic object 
         inserted, skipped = import_rows(db, rows) # insert into database
+        if inserted:
+            read_cache.clear()
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

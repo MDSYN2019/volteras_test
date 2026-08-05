@@ -10,6 +10,13 @@ def test_application_metadata():
     assert app.version == "1.0.0"
 
 
+def test_health_endpoint():
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_vehicle_data_router_is_registered():
     """
     Calling the endpoint without vehicle_id should produce a validation
