@@ -15,6 +15,7 @@ The application includes:
 * Docker Compose for local development
 * A provisioned Grafana telemetry dashboard
 * An Nginx load balancer in front of the backend API
+* A PostgreSQL primary, two streaming replicas, and a Pgpool database load balancer
 * An optional dummy telemetry writer for live local data
 * Short-lived API response caching for common reads
 * A dbt analytics project with staging and hourly fact models
@@ -45,7 +46,10 @@ flowchart TB
         LB[Nginx load balancer<br/>localhost:8000]:::edge
         API[FastAPI API<br/>validation · pagination · export]:::app
         Cache[(TTL read cache<br/>common GET responses)]:::cache
-        DB[(PostgreSQL<br/>vehicle telemetry)]:::data
+        Pgpool[Pgpool database load balancer<br/>writes → primary · reads → cluster]:::edge
+        DBPrimary[(PostgreSQL primary<br/>vehicle telemetry)]:::data
+        DBReplica1[(PostgreSQL replica 1)]:::data
+        DBReplica2[(PostgreSQL replica 2)]:::data
         Grafana[Grafana dashboard<br/>localhost:3000]:::ops
     end
 
@@ -67,17 +71,23 @@ flowchart TB
     UI -->|HTTP JSON| LB
     LB -->|/api/* and /health| API
     API -->|cache lookup / fill| Cache
-    API -->|SQL reads / writes| DB
+    API -->|SQL reads / writes| Pgpool
+    Pgpool -->|writes| DBPrimary
+    Pgpool -->|balanced reads| DBPrimary
+    Pgpool -->|balanced reads| DBReplica1
+    Pgpool -->|balanced reads| DBReplica2
+    DBPrimary -.->|streaming replication| DBReplica1
+    DBPrimary -.->|streaming replication| DBReplica2
     API -->|JSON / CSV / XLSX| UI
-    Grafana -->|server-side SQL| DB
+    Grafana -->|server-side SQL| Pgpool
 
     Operator --> CSV
-    CSV --> Loader --> DB
-    CSV --> Spark -->|ON CONFLICT: skip| DB
+    CSV --> Loader --> Pgpool
+    CSV --> Spark -->|ON CONFLICT: skip| Pgpool
     CSV --> Upload --> API
-    Dummy -->|synthetic rows| DB
+    Dummy -->|synthetic rows| Pgpool
 
-    DB --> dbt --> Mart
+    Pgpool --> dbt --> Mart
     Operator --> Grafana
 ```
 
@@ -207,6 +217,20 @@ Docker Compose now exposes the API through the `load_balancer` service on
 `http://localhost:8000`. Nginx forwards `/api/*` and `/health` requests to the
 backend service, so the frontend should continue to use `VITE_API_BASE_URL=http://localhost:8000`.
 
+### Replicated database
+
+Docker Compose runs `db-primary` plus `db-replica-1` and `db-replica-2`. Repmgr
+configures PostgreSQL streaming replication, while `database_load_balancer`
+(Pgpool) exposes the cluster on port `5432`. All application clients connect to
+Pgpool: write statements are sent only to the current primary and eligible read
+statements are balanced across the PostgreSQL nodes.
+
+Replication is asynchronous, so a read routed to a replica can briefly return
+stale data immediately after a commit. This local topology demonstrates routing
+and replication but does not replace managed backups, tested failover, or
+production monitoring. Use `docker compose down -v` when you intentionally need
+to discard and re-bootstrap every node's local data.
+
 ### Dummy database writer
 
 For local smoke testing with live-looking data, run the optional dummy writer profile:
@@ -295,8 +319,12 @@ The env file should look like as follows:
 POSTGRES_DB=<database_name>
 POSTGRES_USER=<database_user>
 POSTGRES_PASSWORD=<database_password>
+POSTGRES_ADMIN_PASSWORD=<postgres_admin_password>
+REPMGR_PASSWORD=<repmgr_password>
+PGPOOL_ADMIN_USERNAME=admin
+PGPOOL_ADMIN_PASSWORD=<pgpool_admin_password>
 
-DATABASE_URL=postgresql+psycopg://<database_user>:<database_password>@db:5432/<database_name>
+DATABASE_URL=postgresql+psycopg://<database_user>:<database_password>@database_load_balancer:5432/<database_name>
 
 VITE_API_BASE_URL=http://localhost:8000
 
@@ -351,7 +379,7 @@ cp .env.example .env
 make venv
 cp analytics/dbt/profiles.example.yml analytics/dbt/profiles.yml
 npm --prefix frontend install
-docker compose up -d db
+docker compose up -d database_load_balancer
 ```
 
 Activate the environment in each terminal that runs a Python command:
@@ -365,7 +393,7 @@ PySpark dependencies together. `make venv` can be run again after any requiremen
 
 ### Run the application locally
 
-Start the API (its local database URL uses `localhost`, rather than Compose's `db` hostname):
+Start the API (its local database URL uses `localhost`, rather than Compose's Pgpool hostname):
 
 ```bash
 DATABASE_URL='postgresql+psycopg://volteras:volteras@localhost:5432/volteras' \
@@ -413,7 +441,7 @@ deactivate
 
 ### Service dependencies and startup order
 
-PostgreSQL must be healthy before the API starts. The API creates `public.vehicle_data`, so start
+The primary, both replicas, and Pgpool must be healthy before the API starts. The API creates `public.vehicle_data`, so start
 the application at least once before running Spark or dbt. Spark writes into that source table;
 dbt reads it and creates analytics relations in the `analytics` schema. Neither analytics tool is
 required to use the API or frontend.
@@ -484,7 +512,7 @@ installed and you can use `make venv-dbt-debug` and `make venv-dbt-build`. To in
 separate environment instead:
 
 ```bash
-docker compose up -d db backend
+docker compose up -d database_load_balancer backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r analytics/dbt/requirements.txt
@@ -509,7 +537,7 @@ export DBT_SCHEMA=analytics
 To inspect the result:
 
 ```bash
-docker compose exec db psql -U volteras -d volteras -c \
+docker compose exec database_load_balancer psql -U volteras -d volteras -c \
   'select * from analytics.fct_vehicle_hourly order by observed_hour limit 10;'
 ```
 

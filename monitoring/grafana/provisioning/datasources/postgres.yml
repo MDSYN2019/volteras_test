@@ -5,7 +5,7 @@ datasources:
     uid: volteras-postgres
     type: postgres
     access: proxy
-    url: db:5432
+    url: database_load_balancer:5432
     user: $POSTGRES_USER
     secureJsonData:
       password: $POSTGRES_PASSWORD

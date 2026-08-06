@@ -26,15 +26,24 @@ flowchart TB
         lb[Nginx load balancer<br/>:8000 ingress<br/>least connections]:::client
         api[FastAPI service<br/>Uvicorn :8000<br/>validation · pagination · export]:::app
         cache[(In-process TTL read cache<br/>paginated reads · row lookups)]:::cache
-        postgres[(PostgreSQL 16<br/>public.vehicle_data<br/>unique: vehicle_id + timestamp)]:::store
+        pgpool[Pgpool<br/>write routing · read balancing]:::client
+        primary[(PostgreSQL 16 primary<br/>public.vehicle_data)]:::store
+        replica1[(PostgreSQL 16 replica 1)]:::store
+        replica2[(PostgreSQL 16 replica 2)]:::store
         grafana[Grafana :3000<br/>provisioned telemetry dashboard]:::ops
 
         frontend -->|HTTP/JSON<br/>/api/v1/vehicle_data| lb
         lb -->|proxy /api/* and /health| api
         api -->|lookup / populate| cache
-        api -->|SQLAlchemy sessions<br/>read / insert| postgres
+        api -->|SQLAlchemy sessions<br/>read / insert| pgpool
+        pgpool -->|writes only| primary
+        pgpool -->|balanced reads| primary
+        pgpool -->|balanced reads| replica1
+        pgpool -->|balanced reads| replica2
+        primary -.->|streaming replication| replica1
+        primary -.->|streaming replication| replica2
         api -->|JSON / CSV / XLSX<br/>download| frontend
-        grafana -->|server-side read queries| postgres
+        grafana -->|server-side read queries| pgpool
     end
 
     subgraph ingestion[Telemetry ingestion paths]
@@ -59,11 +68,11 @@ flowchart TB
     csv --> cli
     csv --> upload
     csv --> spark
-    cli -->|validated insert<br/>duplicates skipped| postgres
+    cli -->|validated insert<br/>duplicates skipped| pgpool
     upload -->|parse and validate| api
-    spark -->|partition transactions<br/>ON CONFLICT DO NOTHING| postgres
-    dummy -->|periodic inserts| postgres
-    postgres -.->|dbt build reads| source
+    spark -->|partition transactions<br/>ON CONFLICT DO NOTHING| pgpool
+    dummy -->|periodic inserts| pgpool
+    pgpool -.->|dbt build reads| source
     operator -->|runs dbt build| source
 ```
 
@@ -119,14 +128,14 @@ flowchart TB
 | --- | --- | --- |
 | System of record | PostgreSQL `public.vehicle_data` | API, loader, Spark, and dbt share one data contract; schema changes must be coordinated. |
 | Record identity | Unique `(vehicle_id, timestamp)` | Batch retries and stream replays are idempotent, but two readings for the same vehicle and instant cannot coexist. |
-| Startup order | Healthy PostgreSQL → FastAPI → load balancer → frontend | FastAPI currently creates the table at startup; Spark and dbt must wait until it exists. |
+| Startup order | Healthy primary → two replicas → Pgpool → FastAPI → HTTP load balancer → frontend | FastAPI currently creates the table at startup; Spark and dbt must wait until it exists. |
 | Application boundary | Browser calls Nginx, which proxies FastAPI over HTTP; only FastAPI accesses application data | Keep database credentials out of the browser and preserve the API as the validation boundary. |
 | Query behavior | Filtering, sorting, counting, and pagination run in PostgreSQL on cache misses | The composite vehicle/timestamp index supports the primary access pattern; the chart contains only the active page. The in-process cache is a local optimization, not a cross-replica consistency layer. |
 | Validation | Pydantic/Python validates batch and API imports; Spark has a parallel validation implementation | Contract changes must be made in both ingestion paths to avoid inconsistent acceptance rules. |
 | Stream delivery | Checkpointed file discovery plus conflict-safe database inserts | Delivery is effectively at-least-once with idempotent persistence, not exactly-once end to end. |
 | Bad stream records | Invalid rows are counted in logs and discarded | A production design should use a durable dead-letter store with reason, source file, and batch metadata. |
 | Analytics ownership | dbt reads the application table and writes the `analytics` schema | Run dbt with a separate least-privilege role and schedule it after the ingestion freshness window. |
-| Availability | Nginx fronts the API service, with one PostgreSQL volume | This is still a local-development topology, without high availability, automated backups, or disaster recovery. Scale API replicas only with database connection budgets and cache staleness in mind. |
+| Availability | Nginx fronts the API; Pgpool fronts one primary and two asynchronous replicas | Reads can scale across nodes and writes remain primary-only. This local topology still lacks automated backups and tested production failover. |
 | Security | Local CORS origin and development credentials | Production needs managed secrets, TLS, authentication/authorization, restricted origins, and non-development servers. |
 | Observability | Provisioned Grafana telemetry dashboard plus application/stream console logs and API docs | Grafana currently visualizes business telemetry directly from PostgreSQL; add application metrics, traces, ingestion freshness, rejection rates, and saturation alerts. |
 | Schema lifecycle | SQLAlchemy `create_all` at API startup | Replace startup DDL with versioned migrations before multiple environments or rolling deployments. |
@@ -138,8 +147,9 @@ flowchart TB
   ingestion, stored data, and independently scheduled analytics can continue.
 - **API failure:** browser reads, uploads, and exports stop; the external Spark
   writer can continue if PostgreSQL remains available.
-- **PostgreSQL failure:** every read, write, and analytics path is blocked. This
-  is the principal shared dependency and recovery priority.
+- **Primary PostgreSQL failure:** writes stop until promotion/failover completes;
+  asynchronous replication can have a small data-loss window. Replica failures
+  reduce read capacity but Pgpool can continue routing to healthy nodes.
 - **Spark failure:** interactive use and manual/API imports continue. Restart
   with the same durable checkpoint to resume discovery.
 - **dbt failure:** the application remains available, but analytics tables
