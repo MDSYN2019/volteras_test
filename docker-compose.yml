@@ -1,6 +1,6 @@
 services:
   # ============================================================
-  # PostgreSQL primary
+  # PostgreSQL Primary
   # ============================================================
   db-primary:
     image: bitnamilegacy/postgresql-repmgr:16.4.0-debian-12-r27
@@ -12,10 +12,14 @@ services:
       POSTGRESQL_POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres}
 
       REPMGR_PASSWORD: ${REPMGR_PASSWORD:-repmgr}
-      REPMGR_PRIMARY_HOST: db-primary
-      REPMGR_PARTNER_NODES: db-primary,db-replica-1,db-replica-2
 
-      REPMGR_NODE_NAME: db-primary
+      REPMGR_PRIMARY_HOST: db-primary
+      REPMGR_PRIMARY_PORT: 5432
+
+      REPMGR_PARTNER_NODES: "db-primary:5432,db-replica-1:5432,db-replica-2:5432"
+
+      REPMGR_NODE_ID: 1000
+      REPMGR_NODE_NAME: db-0
       REPMGR_NODE_NETWORK_NAME: db-primary
 
     volumes:
@@ -35,22 +39,26 @@ services:
 
 
   # ============================================================
-  # PostgreSQL replica 1
+  # PostgreSQL Replica 1
   # ============================================================
   db-replica-1:
     image: bitnamilegacy/postgresql-repmgr:16.4.0-debian-12-r27
 
-    environment: &replica-environment
+    environment:
       POSTGRESQL_DATABASE: ${POSTGRES_DB:-volteras}
       POSTGRESQL_USERNAME: ${POSTGRES_USER:-volteras}
       POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
       POSTGRESQL_POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres}
 
       REPMGR_PASSWORD: ${REPMGR_PASSWORD:-repmgr}
-      REPMGR_PRIMARY_HOST: db-primary
-      REPMGR_PARTNER_NODES: db-primary,db-replica-1,db-replica-2
 
-      REPMGR_NODE_NAME: db-replica-1
+      REPMGR_PRIMARY_HOST: db-primary
+      REPMGR_PRIMARY_PORT: 5432
+
+      REPMGR_PARTNER_NODES: "db-primary:5432,db-replica-1:5432,db-replica-2:5432"
+
+      REPMGR_NODE_ID: 1001
+      REPMGR_NODE_NAME: db-1
       REPMGR_NODE_NETWORK_NAME: db-replica-1
 
     volumes:
@@ -60,7 +68,7 @@ services:
       db-primary:
         condition: service_healthy
 
-    healthcheck: &postgres-healthcheck
+    healthcheck:
       test:
         [
           "CMD-SHELL",
@@ -74,15 +82,26 @@ services:
 
 
   # ============================================================
-  # PostgreSQL replica 2
+  # PostgreSQL Replica 2
   # ============================================================
   db-replica-2:
     image: bitnamilegacy/postgresql-repmgr:16.4.0-debian-12-r27
 
     environment:
-      <<: *replica-environment
+      POSTGRESQL_DATABASE: ${POSTGRES_DB:-volteras}
+      POSTGRESQL_USERNAME: ${POSTGRES_USER:-volteras}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
+      POSTGRESQL_POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres}
 
-      REPMGR_NODE_NAME: db-replica-2
+      REPMGR_PASSWORD: ${REPMGR_PASSWORD:-repmgr}
+
+      REPMGR_PRIMARY_HOST: db-primary
+      REPMGR_PRIMARY_PORT: 5432
+
+      REPMGR_PARTNER_NODES: "db-primary:5432,db-replica-1:5432,db-replica-2:5432"
+
+      REPMGR_NODE_ID: 1002
+      REPMGR_NODE_NAME: db-2
       REPMGR_NODE_NETWORK_NAME: db-replica-2
 
     volumes:
@@ -92,7 +111,15 @@ services:
       db-primary:
         condition: service_healthy
 
-    healthcheck: *postgres-healthcheck
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-volteras} -d ${POSTGRES_DB:-volteras}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
     restart: unless-stopped
 
@@ -100,23 +127,20 @@ services:
   # ============================================================
   # Pgpool
   #
-  # Application connects here rather than to an individual
-  # PostgreSQL instance.
+  # Backend and other clients connect to this service rather
+  # than directly to an individual PostgreSQL node.
   # ============================================================
   database_load_balancer:
     image: bitnamilegacy/pgpool:4.5.4-debian-12-r2
 
     environment:
-      PGPOOL_BACKEND_NODES: >-
-        0:db-primary:5432,
-        1:db-replica-1:5432,
-        2:db-replica-2:5432
+      PGPOOL_BACKEND_NODES: "0:db-primary:5432,1:db-replica-1:5432,2:db-replica-2:5432"
 
       PGPOOL_SR_CHECK_USER: ${POSTGRES_USER:-volteras}
       PGPOOL_SR_CHECK_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
 
-      PGPOOL_POSTGRES_USERNAME: ${POSTGRES_USER:-volteras}
-      PGPOOL_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
+      PGPOOL_POSTGRES_USERNAME: postgres
+      PGPOOL_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
 
       PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USERNAME:-admin}
       PGPOOL_ADMIN_PASSWORD: ${PGPOOL_ADMIN_PASSWORD:-admin}
@@ -124,7 +148,7 @@ services:
       PGPOOL_ENABLE_LOAD_BALANCING: "yes"
 
     ports:
-      - "5432:5432"
+      - "5433:5432"
 
     depends_on:
       db-primary:
@@ -150,13 +174,14 @@ services:
 
 
   # ============================================================
-  # FastAPI backend
+  # FastAPI Backend
   # ============================================================
   backend:
-    build: ./backend
+    build:
+      context: ./backend
 
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://volteras:volteras@database_load_balancer:5432/volteras}
+      DATABASE_URL: "${DATABASE_URL:-postgresql+psycopg://volteras:volteras@database_load_balancer:5432/volteras}"
       READ_CACHE_TTL_SECONDS: ${READ_CACHE_TTL_SECONDS:-30}
 
     volumes:
@@ -168,16 +193,21 @@ services:
         condition: service_healthy
 
     command:
-      uvicorn app.main:app
-      --host 0.0.0.0
-      --port 8000
-      --reload
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload"
+      ]
 
     restart: unless-stopped
 
 
   # ============================================================
-  # nginx API load balancer / reverse proxy
+  # nginx reverse proxy / API load balancer
   # ============================================================
   load_balancer:
     image: nginx:1.27-alpine
@@ -195,17 +225,20 @@ services:
 
 
   # ============================================================
-  # Dummy telemetry writer
+  # Dummy Data Writer
+  #
+  # Start with:
+  # docker compose --profile dummy-data up
   # ============================================================
   dummy_writer:
-    build: ./backend
+    build:
+      context: ./backend
 
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://volteras:volteras@database_load_balancer:5432/volteras}
+      DATABASE_URL: "${DATABASE_URL:-postgresql+psycopg://volteras:volteras@database_load_balancer:5432/volteras}"
 
       DUMMY_WRITE_INTERVAL_SECONDS: ${DUMMY_WRITE_INTERVAL_SECONDS:-10}
       DUMMY_WRITE_BATCH_SIZE: ${DUMMY_WRITE_BATCH_SIZE:-5}
-
       DUMMY_VEHICLE_IDS: ${DUMMY_VEHICLE_IDS:-demo-car-1,demo-car-2}
 
     volumes:
@@ -216,7 +249,10 @@ services:
         condition: service_healthy
 
     command:
-      python scripts/write_dummy_data.py
+      [
+        "python",
+        "scripts/write_dummy_data.py"
+      ]
 
     profiles:
       - dummy-data
@@ -255,13 +291,14 @@ services:
 
 
   # ============================================================
-  # React / Vite frontend
+  # React / Vite Frontend
   # ============================================================
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
 
     environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+      VITE_API_BASE_URL: "${VITE_API_BASE_URL:-http://localhost:8000}"
 
     ports:
       - "5173:5173"
@@ -274,13 +311,20 @@ services:
       - load_balancer
 
     command:
-      npm run dev -- --host 0.0.0.0
+      [
+        "npm",
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "0.0.0.0"
+      ]
 
     restart: unless-stopped
 
 
 # ==============================================================
-# Persistent volumes
+# Persistent Volumes
 # ==============================================================
 volumes:
   postgres_primary_data:
