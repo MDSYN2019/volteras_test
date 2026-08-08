@@ -1,158 +1,290 @@
 services:
+  # ============================================================
+  # PostgreSQL primary
+  # ============================================================
   db-primary:
-    image: bitnami/postgresql-repmgr:16
+    image: bitnamilegacy/postgresql-repmgr:16.4.0-debian-12-r27
+
     environment:
       POSTGRESQL_DATABASE: ${POSTGRES_DB:-volteras}
       POSTGRESQL_USERNAME: ${POSTGRES_USER:-volteras}
       POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
       POSTGRESQL_POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres}
+
       REPMGR_PASSWORD: ${REPMGR_PASSWORD:-repmgr}
       REPMGR_PRIMARY_HOST: db-primary
       REPMGR_PARTNER_NODES: db-primary,db-replica-1,db-replica-2
+
       REPMGR_NODE_NAME: db-primary
       REPMGR_NODE_NETWORK_NAME: db-primary
+
     volumes:
       - postgres_primary_data:/bitnami/postgresql
+
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-volteras} -d ${POSTGRES_DB:-volteras}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-volteras} -d ${POSTGRES_DB:-volteras}"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
 
+    restart: unless-stopped
+
+
+  # ============================================================
+  # PostgreSQL replica 1
+  # ============================================================
   db-replica-1:
-    image: bitnami/postgresql-repmgr:16
+    image: bitnamilegacy/postgresql-repmgr:16.4.0-debian-12-r27
+
     environment: &replica-environment
       POSTGRESQL_DATABASE: ${POSTGRES_DB:-volteras}
       POSTGRESQL_USERNAME: ${POSTGRES_USER:-volteras}
       POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
       POSTGRESQL_POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres}
+
       REPMGR_PASSWORD: ${REPMGR_PASSWORD:-repmgr}
       REPMGR_PRIMARY_HOST: db-primary
       REPMGR_PARTNER_NODES: db-primary,db-replica-1,db-replica-2
+
       REPMGR_NODE_NAME: db-replica-1
       REPMGR_NODE_NETWORK_NAME: db-replica-1
+
     volumes:
       - postgres_replica_1_data:/bitnami/postgresql
+
     depends_on:
       db-primary:
         condition: service_healthy
+
     healthcheck: &postgres-healthcheck
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-volteras} -d ${POSTGRES_DB:-volteras}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-volteras} -d ${POSTGRES_DB:-volteras}"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
 
+    restart: unless-stopped
+
+
+  # ============================================================
+  # PostgreSQL replica 2
+  # ============================================================
   db-replica-2:
-    image: bitnami/postgresql-repmgr:16
+    image: bitnamilegacy/postgresql-repmgr:16.4.0-debian-12-r27
+
     environment:
       <<: *replica-environment
+
       REPMGR_NODE_NAME: db-replica-2
       REPMGR_NODE_NETWORK_NAME: db-replica-2
+
     volumes:
       - postgres_replica_2_data:/bitnami/postgresql
+
     depends_on:
       db-primary:
         condition: service_healthy
+
     healthcheck: *postgres-healthcheck
 
+    restart: unless-stopped
+
+
+  # ============================================================
+  # Pgpool
+  #
+  # Application connects here rather than to an individual
+  # PostgreSQL instance.
+  # ============================================================
   database_load_balancer:
-    image: bitnami/pgpool:4
+    image: bitnamilegacy/pgpool:4.5.4-debian-12-r2
+
     environment:
-      PGPOOL_BACKEND_NODES: 0:db-primary:5432,1:db-replica-1:5432,2:db-replica-2:5432
+      PGPOOL_BACKEND_NODES: >-
+        0:db-primary:5432,
+        1:db-replica-1:5432,
+        2:db-replica-2:5432
+
       PGPOOL_SR_CHECK_USER: ${POSTGRES_USER:-volteras}
       PGPOOL_SR_CHECK_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
+
       PGPOOL_POSTGRES_USERNAME: ${POSTGRES_USER:-volteras}
       PGPOOL_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
+
       PGPOOL_ADMIN_USERNAME: ${PGPOOL_ADMIN_USERNAME:-admin}
       PGPOOL_ADMIN_PASSWORD: ${PGPOOL_ADMIN_PASSWORD:-admin}
+
       PGPOOL_ENABLE_LOAD_BALANCING: "yes"
+
     ports:
       - "5432:5432"
+
     depends_on:
       db-primary:
         condition: service_healthy
+
       db-replica-1:
         condition: service_healthy
+
       db-replica-2:
         condition: service_healthy
+
     healthcheck:
-      test: ["CMD-SHELL", "PGPASSWORD=${POSTGRES_PASSWORD:-volteras} pg_isready -h localhost -U ${POSTGRES_USER:-volteras} -d ${POSTGRES_DB:-volteras}"]
+      test:
+        [
+          "CMD-SHELL",
+          "PGPASSWORD=${POSTGRES_PASSWORD:-volteras} pg_isready -h localhost -U ${POSTGRES_USER:-volteras} -d ${POSTGRES_DB:-volteras}"
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
 
+    restart: unless-stopped
+
+
+  # ============================================================
+  # FastAPI backend
+  # ============================================================
   backend:
     build: ./backend
+
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://volteras:volteras@database_load_balancer:5432/volteras}
       READ_CACHE_TTL_SECONDS: ${READ_CACHE_TTL_SECONDS:-30}
+
     volumes:
       - ./backend:/app
       - ./sample_data:/data
+
     depends_on:
       database_load_balancer:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+    command:
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+    restart: unless-stopped
+
+
+  # ============================================================
+  # nginx API load balancer / reverse proxy
+  # ============================================================
   load_balancer:
     image: nginx:1.27-alpine
+
     ports:
       - "8000:80"
+
     volumes:
       - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+
     depends_on:
       - backend
 
+    restart: unless-stopped
+
+
+  # ============================================================
+  # Dummy telemetry writer
+  # ============================================================
   dummy_writer:
     build: ./backend
+
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://volteras:volteras@database_load_balancer:5432/volteras}
+
       DUMMY_WRITE_INTERVAL_SECONDS: ${DUMMY_WRITE_INTERVAL_SECONDS:-10}
       DUMMY_WRITE_BATCH_SIZE: ${DUMMY_WRITE_BATCH_SIZE:-5}
+
       DUMMY_VEHICLE_IDS: ${DUMMY_VEHICLE_IDS:-demo-car-1,demo-car-2}
+
     volumes:
       - ./backend:/app
+
     depends_on:
       database_load_balancer:
         condition: service_healthy
-    command: python scripts/write_dummy_data.py
+
+    command:
+      python scripts/write_dummy_data.py
+
     profiles:
       - dummy-data
 
+    restart: unless-stopped
+
+
+  # ============================================================
+  # Grafana
+  # ============================================================
   grafana:
     image: grafana/grafana:12.1.0
+
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
+
       POSTGRES_DB: ${POSTGRES_DB:-volteras}
       POSTGRES_USER: ${POSTGRES_USER:-volteras}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volteras}
+
     ports:
       - "3000:3000"
+
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
     depends_on:
       database_load_balancer:
         condition: service_healthy
 
+    restart: unless-stopped
+
+
+  # ============================================================
+  # React / Vite frontend
+  # ============================================================
   frontend:
     build: ./frontend
+
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+
     ports:
       - "5173:5173"
+
     volumes:
       - ./frontend:/app
       - /app/node_modules
+
     depends_on:
       - load_balancer
-    command: npm run dev -- --host 0.0.0.0
 
+    command:
+      npm run dev -- --host 0.0.0.0
+
+    restart: unless-stopped
+
+
+# ==============================================================
+# Persistent volumes
+# ==============================================================
 volumes:
   postgres_primary_data:
   postgres_replica_1_data:
   postgres_replica_2_data:
   grafana_data:
+    
