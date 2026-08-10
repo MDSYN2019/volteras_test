@@ -1,4 +1,25 @@
 services:
+  mongodb:
+    image: mongo:8.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-volteras}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-volteras}
+      MONGO_INITDB_DATABASE: ${MONGO_DATABASE:-volteras_telemetry}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./infrastructure/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mongosh --quiet --username $$MONGO_INITDB_ROOT_USERNAME --password $$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase admin --eval \"db.adminCommand('ping').ok\" | grep 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   db-primary:
     image: bitnami/postgresql-repmgr:16
     environment:
@@ -152,6 +173,7 @@ services:
     command: npm run dev -- --host 0.0.0.0
 
 volumes:
+  mongodb_data:
   postgres_primary_data:
   postgres_replica_1_data:
   postgres_replica_2_data:
