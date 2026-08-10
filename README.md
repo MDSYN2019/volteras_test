@@ -16,6 +16,7 @@ The application includes:
 * A provisioned Grafana telemetry dashboard
 * An Nginx load balancer in front of the backend API
 * A PostgreSQL primary, two streaming replicas, and a Pgpool database load balancer
+* A MongoDB document store for flexible telemetry documents
 * An optional dummy telemetry writer for live local data
 * Short-lived API response caching for common reads
 * A dbt analytics project with staging and hourly fact models
@@ -50,6 +51,7 @@ flowchart TB
         DBPrimary[(PostgreSQL primary<br/>vehicle telemetry)]:::data
         DBReplica1[(PostgreSQL replica 1)]:::data
         DBReplica2[(PostgreSQL replica 2)]:::data
+        MongoDB[(MongoDB<br/>telemetry document store)]:::data
         Grafana[Grafana dashboard<br/>localhost:3000]:::ops
     end
 
@@ -82,6 +84,7 @@ flowchart TB
     Grafana -->|server-side SQL| Pgpool
 
     Operator --> CSV
+    Operator -->|document workloads| MongoDB
     CSV --> Loader --> Pgpool
     CSV --> Spark -->|ON CONFLICT: skip| Pgpool
     CSV --> Upload --> API
@@ -211,6 +214,53 @@ The chart currently displays the records returned for the active table page.
 
 ## Load balancer, dummy data, caching, and Grafana login
 
+### MongoDB document store
+
+Docker Compose includes MongoDB at `mongodb://localhost:27017`. It provides a separate document
+store for telemetry workloads that benefit from a flexible schema, such as prototyping new sensor
+fields before adding them to the relational application model. On the first start, the
+initialization script creates the `vehicle_telemetry` collection, validates that every document
+has a string `vehicle_id` and BSON date `timestamp`, and adds a unique compound index on those two
+fields to prevent duplicate observations.
+
+MongoDB is deliberately independent of the FastAPI/PostgreSQL request path: starting it does not
+copy PostgreSQL records, and API reads and writes continue to use PostgreSQL. Applications or data
+jobs can opt into MongoDB directly without changing the existing API's persistence contract.
+
+Configure the local database and root credentials in `.env` (the checked-in values are for local
+development only):
+
+```dotenv
+MONGO_ROOT_USERNAME=volteras
+MONGO_ROOT_PASSWORD=volteras
+MONGO_DATABASE=volteras_telemetry
+```
+
+Start only MongoDB, then open an authenticated shell:
+
+```bash
+docker compose up -d mongodb
+docker compose exec mongodb mongosh \
+  --username "$MONGO_ROOT_USERNAME" \
+  --password "$MONGO_ROOT_PASSWORD" \
+  --authenticationDatabase admin "$MONGO_DATABASE"
+```
+
+Inside `mongosh`, insert and query a telemetry document:
+
+```javascript
+db.vehicle_telemetry.insertOne({
+  vehicle_id: "demo-car-1",
+  timestamp: new Date(),
+  speed: 42.5,
+  soc: 81,
+});
+db.vehicle_telemetry.find({ vehicle_id: "demo-car-1" });
+```
+
+The initializer runs only when the `mongodb_data` volume is empty. To intentionally remove all
+local MongoDB and PostgreSQL data and run initialization again, use `docker compose down -v`.
+
 ### Load-balanced API
 
 Docker Compose now exposes the API through the `load_balancer` service on
@@ -324,6 +374,10 @@ REPMGR_PASSWORD=<repmgr_password>
 PGPOOL_ADMIN_USERNAME=admin
 PGPOOL_ADMIN_PASSWORD=<pgpool_admin_password>
 
+MONGO_ROOT_USERNAME=<mongodb_root_user>
+MONGO_ROOT_PASSWORD=<mongodb_root_password>
+MONGO_DATABASE=volteras_telemetry
+
 DATABASE_URL=postgresql+psycopg://<database_user>:<database_password>@database_load_balancer:5432/<database_name>
 
 VITE_API_BASE_URL=http://localhost:8000
@@ -347,6 +401,7 @@ Then open:
 * Frontend: `http://localhost:5173`
 * API documentation: `http://localhost:8000/docs`
 * Grafana: `http://localhost:3000`
+* MongoDB: `mongodb://localhost:27017`
 
 The backend creates the required database tables when the application starts.
 
