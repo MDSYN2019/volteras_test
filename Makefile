@@ -1,4 +1,5 @@
 .PHONY: up down logs test coverage lint import-data dbt-profile dbt-deps dbt-build \
+	live-tracking live-tracking-down kafka-topics kafka-consume kafka-test \
 	venv venv-test venv-lint venv-import-data venv-dbt-debug venv-dbt-build
 
 VENV ?= .venv
@@ -13,6 +14,24 @@ down:
 
 logs:
 	docker compose logs -f
+
+live-tracking:
+	docker compose --profile live-tracking up --build
+
+live-tracking-down:
+	docker compose --profile live-tracking down
+
+kafka-topics:
+	docker compose --profile live-tracking exec kafka kafka-topics.sh \
+		--bootstrap-server kafka:9092 --list
+
+kafka-consume:
+	docker compose --profile live-tracking exec kafka kafka-console-consumer.sh \
+		--bootstrap-server kafka:9092 --topic vehicle.location.current.v1 --from-beginning
+
+kafka-test:
+	docker compose build location-processor
+	docker compose run --rm --no-deps location-processor python -m pytest -q tests
 
 test:
 	docker compose run --rm backend pytest -q

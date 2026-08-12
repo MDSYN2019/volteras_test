@@ -5,6 +5,7 @@ import { fetchVehicleData } from "./api/vehicleData";
 import { VehicleDataChart } from "./components/VehicleDataChart";
 import { VehicleDataTable } from "./components/VehicleDataTable";
 import { VehicleExport } from "./components/VehicleExport";
+import { LiveVehicleMap } from "./components/LiveVehicleMap";
 import type { VehicleData } from "./types/vehicleData";
 
 import "./styles.css";
@@ -100,6 +101,8 @@ export default function App() {
           vehicle records.
         </p>
       </header>
+
+      <LiveVehicleMap />
 
       <form
         className="filters"

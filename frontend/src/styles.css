@@ -35,6 +35,21 @@ input, select, button { border: 1px solid #cbd8d4; border-radius: 9px; padding: 
 button { cursor: pointer; background: #173f35; color: white; border-color: #173f35; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
+.live-map { margin: 0 0 28px; padding: 20px; background: #102e27; color: white; border-radius: 18px; box-shadow: 0 18px 45px rgba(16, 46, 39, .18); }
+.live-map-header { display: flex; justify-content: space-between; gap: 20px; align-items: start; margin-bottom: 16px; }
+.live-map-header h2 { margin: 4px 0; font-size: 1.7rem; }
+.live-map-header p { margin: 0; color: #b9d5cd; }
+.stream-status { padding: 7px 11px; border: 1px solid currentColor; border-radius: 999px; text-transform: uppercase; font-size: .72rem; font-weight: 800; letter-spacing: .08em; }
+.stream-status.live { color: #72e2b7; }
+.stream-status.offline { color: #ffad91; }
+.stream-status.connecting { color: #f7d978; }
+.map-canvas { position: relative; overflow: hidden; background: #edf7f3; border-radius: 12px; }
+.map-canvas svg { display: block; width: 100%; height: min(42vw, 380px); min-height: 240px; }
+.map-empty { position: absolute; inset: 50% auto auto 50%; transform: translate(-50%, -50%); width: max-content; max-width: 80%; color: #365a50; text-align: center; }
+.coordinate-strip { display: grid; grid-template-columns: 1.3fr repeat(3, 1fr); gap: 14px; padding-top: 16px; font-variant-numeric: tabular-nums; }
+.coordinate-strip span { color: #b9d5cd; }
+.coordinate-strip b { display: block; margin-top: 3px; color: white; }
+
 .table-meta, .pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 22px 0 10px; }
 .table-shell { overflow-x: auto; background: white; border: 1px solid #dfe7e4; border-radius: 14px; }
 table { width: 100%; border-collapse: collapse; }
@@ -45,6 +60,7 @@ tr:last-child td { border-bottom: 0; }
 
 @media (max-width: 850px) {
   .filters { grid-template-columns: 1fr; }
+  .coordinate-strip { grid-template-columns: 1fr 1fr; }
 }
 
 

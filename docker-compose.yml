@@ -163,6 +163,7 @@ services:
     build: ./frontend
     environment:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+      VITE_LOCATION_WS_URL: ${VITE_LOCATION_WS_URL:-ws://localhost:8080/locations}
     ports:
       - "5173:5173"
     volumes:
@@ -171,6 +172,65 @@ services:
     depends_on:
       - load_balancer
     command: npm run dev -- --host 0.0.0.0
+
+  kafka:
+    image: bitnami/kafka:3.9
+    profiles: ["live-tracking"]
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+    ports:
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  location-producer:
+    build:
+      context: ./streaming
+      dockerfile: Dockerfile.kafka
+    profiles: ["live-tracking"]
+    environment: &kafka-location-environment
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_RAW_TOPIC: vehicle.location.raw.v1
+      KAFKA_PRODUCT_TOPIC: vehicle.location.current.v1
+    command: python -m kafka_pipeline.producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  location-processor:
+    build:
+      context: ./streaming
+      dockerfile: Dockerfile.kafka
+    profiles: ["live-tracking"]
+    environment: *kafka-location-environment
+    command: python -m kafka_pipeline.processor
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  location-gateway:
+    build:
+      context: ./streaming
+      dockerfile: Dockerfile.kafka
+    profiles: ["live-tracking"]
+    environment: *kafka-location-environment
+    command: python -m kafka_pipeline.gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
 
 volumes:
   mongodb_data:
