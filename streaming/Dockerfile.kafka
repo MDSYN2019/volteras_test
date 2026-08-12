@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY requirements-kafka.txt .
+RUN pip install --no-cache-dir -r requirements-kafka.txt
+COPY kafka_pipeline ./kafka_pipeline
+COPY tests ./tests
+
+ENV PYTHONUNBUFFERED=1

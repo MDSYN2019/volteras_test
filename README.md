@@ -21,6 +21,7 @@ The application includes:
 * Short-lived API response caching for common reads
 * A dbt analytics project with staging and hourly fact models
 * An idempotent Spark Structured Streaming ingestion example
+* A Kafka GPS pipeline and live vehicle-location dashboard
 
 ## Architecture
 
@@ -40,6 +41,7 @@ flowchart TB
     User[Application user<br/>web browser]:::edge
     Operator[Operator / data engineer]:::ops
     CSV[(Vehicle CSV files<br/>&lt;vehicle_id&gt;.csv)]:::data
+    GPS[GPS producer<br/>latitude · longitude]:::data
 
     subgraph Runtime[Local Docker Compose runtime]
         direction LR
@@ -53,6 +55,8 @@ flowchart TB
         DBReplica2[(PostgreSQL replica 2)]:::data
         MongoDB[(MongoDB<br/>telemetry document store)]:::data
         Grafana[Grafana dashboard<br/>localhost:3000]:::ops
+        Kafka[(Kafka topics<br/>raw → location product)]:::data
+        Gateway[WebSocket consumer<br/>localhost:8080]:::edge
     end
 
     subgraph Ingestion[Ingestion options]
@@ -70,6 +74,8 @@ flowchart TB
     end
 
     User -->|opens| UI
+    GPS -->|vehicle.location.raw.v1| Kafka
+    Kafka -->|validated product| Gateway -->|WebSocket| UI
     UI -->|HTTP JSON| LB
     LB -->|/api/* and /health| API
     API -->|cache lookup / fill| Cache
@@ -125,6 +131,80 @@ flowchart TB
 * Make
 * dbt Core with the PostgreSQL adapter
 * PySpark Structured Streaming
+* Apache Kafka-compatible event streaming
+
+## Live vehicle tracking with Kafka
+
+The optional `live-tracking` Compose profile runs a complete real-time location path. A synthetic
+vehicle producer generates longitude/latitude readings once per second, keyed by vehicle ID. Kafka
+retains those raw events in `vehicle.location.raw.v1`. The product builder consumer validates the
+event contract and coordinate ranges, enriches accepted events, and publishes the reusable
+`live_vehicle_location` product to `vehicle.location.current.v1`. A separate consumer group fans
+that product out over WebSockets to the React dashboard.
+
+```mermaid
+flowchart LR
+    P[Synthetic GPS producer] -->|vehicle ID key| R[(vehicle.location.raw.v1)]
+    R --> C[Validation and enrichment consumer]
+    C -->|invalid: log and skip| D[Rejected event log]
+    C --> T[(vehicle.location.current.v1)]
+    T --> G[WebSocket gateway consumer]
+    G -->|ws://localhost:8080/locations| U[Live React location dashboard]
+```
+
+### Start and visualize the drive
+
+Run the entire application and tracking pipeline:
+
+```bash
+make live-tracking
+```
+
+Open `http://localhost:5173`. The **Live vehicle location** card reconnects automatically, plots
+the most recent 60 coordinates as a route, highlights the current position, and displays the exact
+latitude, longitude, vehicle ID, connection state, and event time. The built-in producer follows a
+repeatable loop around central London, so no physical GPS device is needed for the demo.
+
+To run only Kafka and its location services in the background, use:
+
+```bash
+docker compose --profile live-tracking up -d --build \
+  kafka location-producer location-processor location-gateway
+```
+
+Inspect the topics and the processed data product from another terminal:
+
+```bash
+make kafka-topics
+make kafka-consume
+```
+
+Kafka is exposed to host tools at `localhost:29092`; containers use `kafka:9092`. The WebSocket
+endpoint is `ws://localhost:8080/locations`, and its health endpoint is
+`http://localhost:8080/health`. Stop and remove the profile with `make live-tracking-down`.
+
+### Publish real vehicle coordinates
+
+Replace the demo producer with any Kafka client that writes UTF-8 JSON to
+`vehicle.location.raw.v1`, uses `vehicle_id` as the message key to preserve per-vehicle ordering,
+and follows this versioned contract:
+
+```json
+{
+  "schema_version": 1,
+  "vehicle_id": "fleet-car-42",
+  "timestamp": "2026-08-12T14:32:10.125000+00:00",
+  "latitude": 51.5074,
+  "longitude": -0.1278,
+  "sequence": 9182
+}
+```
+
+Configure the demo without code changes through `VEHICLE_ID`, `LOCATION_INTERVAL_SECONDS`,
+`ROUTE_CENTER_LATITUDE`, and `ROUTE_CENTER_LONGITUDE` on `location-producer`. Configure a deployed
+frontend with `VITE_LOCATION_WS_URL`. In production, use TLS/authenticated Kafka and WebSockets,
+a schema registry, a dead-letter topic instead of log-only rejection, durable topic replication,
+and a gateway that shares consumer output through an internal broadcast layer when it is scaled.
 
 ## Features
 
@@ -402,6 +482,7 @@ Then open:
 * API documentation: `http://localhost:8000/docs`
 * Grafana: `http://localhost:3000`
 * MongoDB: `mongodb://localhost:27017`
+* Live location WebSocket (with the profile): `ws://localhost:8080/locations`
 
 The backend creates the required database tables when the application starts.
 
